@@ -4,7 +4,6 @@ import (
 	"math"
 	"os"
 	"sync"
-	"sync/atomic"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/veandco/go-sdl2/sdl"
@@ -29,26 +28,67 @@ type Settings struct {
 
 type MandelbrotImage struct {
 	mu       sync.Mutex
-	Renderer *sdl.Renderer
+	Width    float64
+	Height   float64
+	Pixels   []byte
+	Settings *Settings
+	Jobs     chan Point
 }
 
-func NewMandelbrotImage(renderer *sdl.Renderer) *MandelbrotImage {
+func NewMandelbrotImage(width, height float64, settings *Settings) *MandelbrotImage {
 	return &MandelbrotImage{
-		Renderer: renderer,
+		Width:    width,
+		Height:   height,
+		Pixels:   make([]byte, int(width*height*4)),
+		Settings: settings,
+		Jobs:     make(chan Point),
+	}
+}
+
+func (mi *MandelbrotImage) Init() {
+	var i uint64
+	for i = 0; i < uint64(mi.Width*mi.Height); i += 4 {
+		mi.Pixels[i] = 0
+		mi.Pixels[i+1] = 0
+		mi.Pixels[i+2] = 0
+		mi.Pixels[i+3] = 0
 	}
 }
 
 func (mi *MandelbrotImage) DrawPoint(point Point) {
 	mi.mu.Lock()
 	defer mi.mu.Unlock()
-	err := mi.Renderer.SetDrawColor(point.Red, point.Green, point.Blue, 255)
-	if err != nil {
-		log.WithError(err).Debug("error setting draw color on renderer")
+	idx := (int(point.Y) * int(mi.Width) * 4) + (int(point.X) * 4)
+
+	mi.Pixels[idx] = point.Red
+	mi.Pixels[idx+1] = point.Green
+	mi.Pixels[idx+2] = point.Blue
+	mi.Pixels[idx+3] = 255
+}
+
+func (mi *MandelbrotImage) ForceRender() {
+	var wg sync.WaitGroup
+	var i int64
+	var j int64
+	for i = 0; i < int64(mi.Width); i++ {
+		for j = 0; j < int64(mi.Height); j++ {
+			pt := Point{
+				X: float64(i),
+				Y: float64(j),
+			}
+			wg.Add(1)
+			go mandelbrotWorker(&wg, pt, mi.Jobs, mi.Settings)
+		}
 	}
-	mi.Renderer.DrawPoint(
-		int32(point.X),
-		int32(point.Y),
-	)
+
+	go func() {
+		wg.Wait()
+	}()
+
+}
+
+func (mi *MandelbrotImage) Close() {
+	close(mi.Jobs)
 }
 
 func mapToRange(val, in_min, in_max, out_min, out_max float64) float64 {
@@ -70,12 +110,11 @@ func imageWriter(mi *MandelbrotImage, jobs chan Point) {
 	}
 }
 
-func mandelbrotWorker(wg *sync.WaitGroup, count *uint64, pt Point, jobs chan Point, settings *Settings) {
+func mandelbrotWorker(wg *sync.WaitGroup, pt Point, jobs chan Point, settings *Settings) {
 	defer wg.Done()
 
 	i := pt.X
 	j := pt.Y
-	//fmt.Println(i, j)
 
 	x := mapToRange(float64(i), 0, settings.Width, settings.Min, settings.Max)
 	y := mapToRange(float64(j), 0, settings.Height, settings.Min, settings.Max)
@@ -89,7 +128,6 @@ func mandelbrotWorker(wg *sync.WaitGroup, count *uint64, pt Point, jobs chan Poi
 	var iters int64
 	var z int64
 	for z = 0; z < settings.MaxIterations; z++ {
-		//log.WithField("max iterations", settings.MaxIterations).Debug()
 		x1 := x*x - y*y
 		y1 := 2 * x * y
 		x = x1 + x0
@@ -117,7 +155,6 @@ func mandelbrotWorker(wg *sync.WaitGroup, count *uint64, pt Point, jobs chan Poi
 		Blue:  uint8(blue),
 	}
 	jobs <- outpt
-	atomic.AddUint64(count, 1)
 	return
 }
 
@@ -144,11 +181,6 @@ func main() {
 		},
 	}
 
-	var wg sync.WaitGroup
-	var jobCount uint64
-
-	jobs := make(chan Point)
-
 	window, err := sdl.CreateWindow("Mandelbrot Set",
 		sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED,
 		1280, 720, sdl.WINDOW_SHOWN)
@@ -168,10 +200,24 @@ func main() {
 		log.WithError(err).Panic("error setting logical size on the renderer")
 	}
 
-	mandelbrotImg := NewMandelbrotImage(renderer)
-	go imageWriter(mandelbrotImg, jobs)
+	texture, err := renderer.CreateTexture(
+		sdl.PIXELFORMAT_ARGB8888, sdl.TEXTUREACCESS_STATIC,
+		int32(settings.Width), int32(settings.Height))
+	if err != nil {
+		log.WithError(err).Panic("error creating a texture on the renderer")
+	}
+	defer texture.Destroy()
+
+	mandelbrotImg := NewMandelbrotImage(settings.Width, settings.Height, &settings)
+	defer mandelbrotImg.Close()
+
+	go imageWriter(mandelbrotImg, mandelbrotImg.Jobs)
+
+	mandelbrotImg.Init()
+	mandelbrotImg.ForceRender()
 
 	running := true
+	updateTexture := false
 	for running {
 		for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
 			switch t := event.(type) {
@@ -185,44 +231,48 @@ func main() {
 				}
 				if keyCode == 1073741904 {
 					settings.Center.X -= 0.05
+					updateTexture = true
 				}
 				if keyCode == 1073741903 {
 					settings.Center.X += 0.05
+					updateTexture = true
 				}
 				if keyCode == 1073741905 {
 					settings.Center.Y += 0.05
+					updateTexture = true
 				}
 				if keyCode == 1073741906 {
 					settings.Center.Y -= 0.05
+					updateTexture = true
 				}
 
 				if keyCode == 61 {
 					settings.Min += 0.15
 					settings.Max -= 0.1
 					settings.MaxIterations += 5
+					updateTexture = true
 				}
 				if keyCode == 45 {
 					settings.Min -= 0.15
 					settings.Max += 0.1
 					settings.MaxIterations -= 5
+					updateTexture = true
 				}
 			}
 		}
 
-		var i int64
-		var j int64
-		for i = 0; i < int64(settings.Width); i++ {
-			for j = 0; j < int64(settings.Height); j++ {
-				pt := Point{
-					X: float64(i),
-					Y: float64(j),
-				}
-				wg.Add(1)
-				go mandelbrotWorker(&wg, &jobCount, pt, jobs, &settings)
-			}
+		texture.Update(nil, mandelbrotImg.Pixels[:], 3200)
+		window.UpdateSurface()
+
+		if updateTexture {
+			mandelbrotImg.ForceRender()
+			updateTexture = false
 		}
 
-		wg.Wait()
+		renderer.Clear()
+		renderer.Copy(texture, nil, nil)
+
+		sdl.Delay(500)
 		renderer.Present()
 	}
 }
