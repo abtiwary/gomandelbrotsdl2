@@ -172,8 +172,8 @@ func main() {
 	settings := Settings{
 		Width:         800,
 		Height:        800,
-		Min:           -1.00,
-		Max:           1.00,
+		Min:           -2.84,
+		Max:           2.0,
 		MaxIterations: 200,
 		Center: Point{
 			X: 0.5,
@@ -229,30 +229,33 @@ func main() {
 				if keyCode == 113 {
 					running = false
 				}
-				if keyCode == 1073741904 {
+
+				// move the set in x and y
+				if keyCode == sdl.K_LEFT {
 					settings.Center.X -= 0.05
 					updateTexture = true
 				}
-				if keyCode == 1073741903 {
+				if keyCode == sdl.K_RIGHT {
 					settings.Center.X += 0.05
 					updateTexture = true
 				}
-				if keyCode == 1073741905 {
+				if keyCode == sdl.K_DOWN {
 					settings.Center.Y += 0.05
 					updateTexture = true
 				}
-				if keyCode == 1073741906 {
+				if keyCode == sdl.K_UP {
 					settings.Center.Y -= 0.05
 					updateTexture = true
 				}
 
-				if keyCode == 61 {
+				// zoom in and out
+				if keyCode == sdl.K_EQUALS {
 					settings.Min += 0.15
 					settings.Max -= 0.1
 					settings.MaxIterations += 5
 					updateTexture = true
 				}
-				if keyCode == 45 {
+				if keyCode == sdl.K_MINUS {
 					settings.Min -= 0.15
 					settings.Max += 0.1
 					settings.MaxIterations -= 5
